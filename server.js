@@ -4,29 +4,27 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { body, validationResult } = require("express-validator");
 const cors = require("cors");
-const clusterConnection = process.env.clusterConnection;
 const http = require("http");
 const socketIo = require("socket.io");
 
 const app = express();
-app.use(express.json());
-app.use(cors());
+const server = http.createServer(app);
+const io = socketIo(server);
 
 const PORT = process.env.PORT || 5000;
 
 // MongoDB setup (assuming you have MongoDB installed locally or use a cloud service)
-async function mongoConnect() {
-  await mongoose.connect("mongodb+srv://deranged248:derangedfrfrlmao@deranged.bvcwyla.mongodb.net/wait?retryWrites=true&w=majority&appName=Deranged", {
-    useNewUrlParser: true,
-  });
-  const db = mongoose.connection;
-  db.on("error", console.error.bind(console, "MongoDB connection error:"));
-  db.once("open", () => {
-    console.log("Connected to MongoDB");
-  });
-}
+mongoose.connect("mongodb+srv://deranged248:derangedfrfrlmao@deranged.bvcwyla.mongodb.net/wait?retryWrites=true&w=majority&appName=Deranged", {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
 
-mongoConnect();
+const db = mongoose.connection;
+db.on("error", console.error.bind(console, "MongoDB connection error:"));
+db.once("open", () => {
+  console.log("Connected to MongoDB");
+});
+
 // Mongoose schema for Psychiatrist
 const psychiatristSchema = new mongoose.Schema({
   name: String,
@@ -48,34 +46,19 @@ const helpRequestSchema = new mongoose.Schema({
 
 const HelpRequest = mongoose.model("HelpRequest", helpRequestSchema);
 
-// Middleware for JWT verification
-const verifyToken = (req, res, next) => {
-  const token = req.headers["authorization"];
-  if (!token)
-    return res
-      .status(401)
-      .json({ message: "Access denied. Token not provided." });
-
-  jwt.verify(token, "secretkey", (err, decoded) => {
-    if (err) return res.status(401).json({ message: "Invalid token." });
-    req.user = decoded;
-    next();
-  });
-};
-
-// Socket.IO setup
-const server = http.createServer(app);
-const io = socketIo(server);
+// Middleware
+app.use(express.json());
+app.use(cors());
 
 // Socket.IO connection handling
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
   // Handle psychiatrist online status
-  socket.on("psychiatrist-online", async () => {
+  socket.on("psychiatrist-online", async (psychiatristId) => {
     // Mark psychiatrist as online
     const psychiatrist = await Psychiatrist.findOneAndUpdate(
-      { _id: socket.handshake.query.psychiatristId },
+      { _id: psychiatristId },
       { isOnline: true },
       { new: true }
     );
@@ -87,10 +70,10 @@ io.on("connection", (socket) => {
   });
 
   // Handle psychiatrist offline status
-  socket.on("psychiatrist-offline", async () => {
+  socket.on("psychiatrist-offline", async (psychiatristId) => {
     // Mark psychiatrist as offline
     const psychiatrist = await Psychiatrist.findOneAndUpdate(
-      { _id: socket.handshake.query.psychiatristId },
+      { _id: psychiatristId },
       { isOnline: false },
       { new: true }
     );
@@ -101,23 +84,10 @@ io.on("connection", (socket) => {
     });
   });
 
-  // Handle help requests
-  socket.on("help-request", async (data) => {
-    // Save help request to MongoDB
-    const { name, email, description, psychiatristId } = data;
-    const newHelpRequest = new HelpRequest({
-      name,
-      email,
-      description,
-      psychiatristId,
-    });
-    await newHelpRequest.save();
-
-    // Emit help request to psychiatrist if online
-    const psychiatrist = await Psychiatrist.findById(psychiatristId);
-    if (psychiatrist && psychiatrist.isOnline) {
-      io.to(psychiatrist.socketId).emit("new-help-request", newHelpRequest);
-    }
+  // Handle user messages
+  socket.on("user-message", (message) => {
+    // Broadcast message to all psychiatrists
+    io.emit("user-message", { text: message.text });
   });
 
   // Disconnect handling
@@ -130,7 +100,7 @@ io.on("connection", (socket) => {
 
 // Register a new Psychiatrist
 app.post(
-  "/PsychiatristRegister",
+  "/register",
   [
     body("name").notEmpty(),
     body("email").isEmail(),
@@ -157,7 +127,7 @@ app.post(
 );
 
 // Psychiatrist login
-app.post("/PsychiatristLogin", async (req, res) => {
+app.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const psychiatrist = await Psychiatrist.findOne({ email });
 
@@ -177,32 +147,8 @@ app.post("/PsychiatristLogin", async (req, res) => {
   res.json({ token, psychiatristId: psychiatrist._id });
 });
 
-// Anonymous user help request
-app.post("/api/help", async (req, res) => {
-  const { name, email, description, psychiatristId } = req.body;
-
-  // Emit help request to psychiatrist if online
-  const psychiatrist = await Psychiatrist.findById(psychiatristId);
-  if (psychiatrist && psychiatrist.isOnline) {
-    io.to(psychiatrist.socketId).emit("new-help-request", {
-      name,
-      email,
-      description,
-      psychiatristId,
-    });
-    res.status(200).json({ message: "Help request sent." });
-  } else {
-    res
-      .status(404)
-      .json({
-        message:
-          "No psychiatrists available at the moment. Please try again later.",
-      });
-  }
-});
-
 // Get online psychiatrists
-app.get("/api/psychiatrists/online", async (req, res) => {
+app.get("/psychiatrists/online", async (req, res) => {
   const onlinePsychiatrists = await Psychiatrist.find({ isOnline: true });
   res.json({ psychiatrists: onlinePsychiatrists });
 });
