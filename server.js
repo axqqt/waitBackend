@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require("express");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
@@ -16,13 +17,10 @@ const io = socketIo(server);
 const PORT = process.env.PORT || 5000;
 
 // MongoDB setup
-mongoose.connect(
-  process.env.clusterConnection,
-  {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  }
-);
+mongoose.connect(process.env.MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
 
 const db = mongoose.connection;
 db.on("error", console.error.bind(console, "MongoDB connection error:"));
@@ -47,6 +45,20 @@ const upload = multer({ storage: storage });
 // Middleware
 app.use(express.json());
 app.use(cors());
+
+// JWT Middleware
+const authenticateToken = (req, res, next) => {
+  const token = req.header('token');
+  if (!token) return res.status(401).json({ message: 'Access denied' });
+
+  try {
+    const verified = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = verified;
+    next();
+  } catch (error) {
+    res.status(400).json({ message: 'Invalid token' });
+  }
+};
 
 // Socket.IO connection handling
 io.on("connection", (socket) => {
@@ -80,37 +92,27 @@ io.on("connection", (socket) => {
     });
   });
 
-  // Handle user messages
-  socket.on("user-message", (message) => {
-    io.emit("user-message", { text: message.text });
+  // Handle user message
+  socket.on("user-message", async (data) => {
+    io.emit("user-message", {
+      text: data.text,
+      user: "Anonymous User",
+    });
   });
 
-  // Disconnect handling
   socket.on("disconnect", () => {
     console.log("User disconnected:", socket.id);
   });
 });
 
-// Nodemailer setup for sending emails
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.nodeMailEmail, // Replace with your email
-    pass: process.env.nodeMailPassword, // Replace with your email password
-  },
-});
-
-// Routes
-
-// Register a new Psychiatrist with proof of certification
+// Psychiatrist registration route
 app.post(
   "/register",
-  upload.single("attachment"),
+  upload.single("proof"),
   [
-    body("email").isEmail(),
-    body("name").notEmpty(),
-    body("password").notEmpty(),
-    body("description").optional(),
+    body("name").notEmpty().withMessage("Name is required"),
+    body("email").isEmail().withMessage("Valid email is required"),
+    body("password").isLength({ min: 6 }).withMessage("Password must be at least 6 characters long"),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -118,84 +120,114 @@ app.post(
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { email, name, password, description } = req.body;
-    const attachment = req.file;
-
-    if (!attachment) {
-      return res.status(400).json({ message: "Proof of certification is required." });
-    }
+    const { name, email, password } = req.body;
+    const proof = req.file;
 
     try {
       const hashedPassword = await bcrypt.hash(password, 10);
+
       const newPsychiatrist = new Psychiatrist({
         name,
         email,
         password: hashedPassword,
       });
+
       await newPsychiatrist.save();
 
-      // Send email with attachment
+      // Send email with proof attachment
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: process.env.GMAIL_USER,
+          pass: process.env.GMAIL_PASS,
+        },
+      });
+
       const mailOptions = {
-        from: email, // Replace with your email
+        from: process.env.GMAIL_USER,
         to: "veloxify@gmail.com",
-        subject: "Proof of Certification",
-        text: "Please find the attached proof of certification.",
+        subject: "New Psychiatrist Registration",
+        text: `Name: ${name}\nEmail: ${email}\n\nPlease find the attached proof of certification.`,
         attachments: [
           {
-            filename: attachment.originalname,
-            content: attachment.buffer,
+            filename: proof.originalname,
+            content: proof.buffer,
           },
         ],
       };
 
       transporter.sendMail(mailOptions, (error, info) => {
         if (error) {
-          return console.error("Error sending email:", error);
+          console.error("Error sending email:", error);
+        } else {
+          console.log("Email sent:", info.response);
         }
-        console.log("Email sent:", info.response);
       });
 
-      res.status(201).json({ message: "Psychiatrist registered successfully." });
+      res.status(201).json({ message: "Psychiatrist registered successfully!" });
     } catch (error) {
       console.error("Error registering psychiatrist:", error);
-      res.status(500).json({ message: "Registration failed. Please try again later." });
+      res.status(500).json({ message: "Server error" });
     }
   }
 );
 
-// Psychiatrist login
+// Psychiatrist login route
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
-  const psychiatrist = await Psychiatrist.findOne({ email });
 
-  if (!psychiatrist) {
-    return res.status(404).json({ message: "Psychiatrist not found." });
+  try {
+    const psychiatrist = await Psychiatrist.findOne({ email });
+    if (!psychiatrist) {
+      return res.status(400).json({ message: "Invalid email or password" });
+    }
+
+    const isMatch = await bcrypt.compare(password, psychiatrist.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: "Invalid email or password" });
+    }
+
+    const token = jwt.sign({ _id: psychiatrist._id }, process.env.JWT_SECRET, {
+      expiresIn: "1h",
+    });
+
+    res.json({ token });
+  } catch (error) {
+    console.error("Error logging in:", error);
+    res.status(500).json({ message: "Server error" });
   }
+});
 
-  const isMatch = await bcrypt.compare(password, psychiatrist.password);
-  if (!isMatch) {
-    return res.status(401).json({ message: "Invalid credentials." });
+// Google login route
+app.post("/google-login", async (req, res) => {
+  const { idToken } = req.body;
+
+  try {
+    const ticket = await client.verifyIdToken({
+      idToken: idToken,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const { name, email } = ticket.getPayload();
+
+    let psychiatrist = await Psychiatrist.findOne({ email });
+
+    if (!psychiatrist) {
+      psychiatrist = new Psychiatrist({ name, email, password: null });
+      await psychiatrist.save();
+    }
+
+    const token = jwt.sign({ _id: psychiatrist._id }, process.env.JWT_SECRET, {
+      expiresIn: "1h",
+    });
+
+    res.json({ token });
+  } catch (error) {
+    console.error("Error logging in with Google:", error);
+    res.status(500).json({ message: "Server error" });
   }
-
-  const token = jwt.sign({ id: psychiatrist._id }, "secretkey", {
-    expiresIn: "1h",
-  });
-
-  res.json({ token, psychiatristId: psychiatrist._id });
 });
 
-// Get online psychiatrists
-app.get("/psychiatrists/online", async (req, res) => {
-  const onlinePsychiatrists = await Psychiatrist.find({ isOnline: true });
-  res.json({ psychiatrists: onlinePsychiatrists });
-});
-
-// Default route for homepage
-app.get("/", (req, res) => {
-  res.status(200).json({ Alert: "Hey, this is the homepage!" });
-});
-
-// Start server
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
