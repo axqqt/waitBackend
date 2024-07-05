@@ -6,6 +6,7 @@ const { body, validationResult } = require("express-validator");
 const cors = require("cors");
 const http = require("http");
 const socketIo = require("socket.io");
+const multer = require("multer");
 
 const app = express();
 const server = http.createServer(app);
@@ -35,16 +36,9 @@ const psychiatristSchema = new mongoose.Schema({
 
 const Psychiatrist = mongoose.model("Psychiatrist", psychiatristSchema);
 
-// Mongoose schema for Help Request
-const helpRequestSchema = new mongoose.Schema({
-  name: String,
-  email: String,
-  description: String,
-  psychiatristId: { type: mongoose.Schema.Types.ObjectId, ref: "Psychiatrist" },
-  timestamp: { type: Date, default: Date.now },
-});
-
-const HelpRequest = mongoose.model("HelpRequest", helpRequestSchema);
+// Multer setup for handling file uploads
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
 // Middleware
 app.use(express.json());
@@ -98,13 +92,13 @@ io.on("connection", (socket) => {
 
 // Routes
 
-// Register a new Psychiatrist
+// Register a new Psychiatrist with proof of certification
 app.post(
   "/register",
+  upload.single("attachment"),
   [
-    body("name").notEmpty(),
     body("email").isEmail(),
-    body("password").isLength({ min: 6 }),
+    body("description").optional(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -112,17 +106,33 @@ app.post(
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, email, password } = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const { email, description } = req.body;
 
-    const newPsychiatrist = new Psychiatrist({
-      name,
-      email,
-      password: hashedPassword,
-    });
-    await newPsychiatrist.save();
+    // Multer middleware has stored the file in req.file
+    const attachment = req.file;
 
-    res.status(201).json({ message: "Psychiatrist registered successfully." });
+    if (!attachment) {
+      return res.status(400).json({ message: "Proof of certification is required." });
+    }
+
+    try {
+      // Process the attachment as needed (save to cloud storage, etc.)
+      // For demonstration, we're just logging its details
+      console.log("Attachment received:", attachment.originalname, attachment.size);
+
+      // Example: Save psychiatrist details to MongoDB
+      const newPsychiatrist = new Psychiatrist({
+        name: "Psychiatrist Name", // Replace with actual name handling logic
+        email,
+        password: "placeholder", // Password handling should not be handled directly like this
+      });
+      await newPsychiatrist.save();
+
+      res.status(201).json({ message: "Psychiatrist registered successfully." });
+    } catch (error) {
+      console.error('Error registering psychiatrist:', error);
+      res.status(500).json({ message: "Registration failed. Please try again later." });
+    }
   }
 );
 
