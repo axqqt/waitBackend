@@ -7,6 +7,7 @@ const cors = require("cors");
 const http = require("http");
 const socketIo = require("socket.io");
 const multer = require("multer");
+const nodemailer = require("nodemailer");
 
 const app = express();
 const server = http.createServer(app);
@@ -14,11 +15,14 @@ const io = socketIo(server);
 
 const PORT = process.env.PORT || 5000;
 
-// MongoDB setup (assuming you have MongoDB installed locally or use a cloud service)
-mongoose.connect("mongodb+srv://deranged248:derangedfrfrlmao@deranged.bvcwyla.mongodb.net/wait?retryWrites=true&w=majority&appName=Deranged", {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-});
+// MongoDB setup
+mongoose.connect(
+  "mongodb+srv://deranged248:derangedfrfrlmao@deranged.bvcwyla.mongodb.net/wait?retryWrites=true&w=majority&appName=Deranged",
+  {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  }
+);
 
 const db = mongoose.connection;
 db.on("error", console.error.bind(console, "MongoDB connection error:"));
@@ -50,7 +54,6 @@ io.on("connection", (socket) => {
 
   // Handle psychiatrist online status
   socket.on("psychiatrist-online", async (psychiatristId) => {
-    // Mark psychiatrist as online
     const psychiatrist = await Psychiatrist.findOneAndUpdate(
       { _id: psychiatristId },
       { isOnline: true },
@@ -65,7 +68,6 @@ io.on("connection", (socket) => {
 
   // Handle psychiatrist offline status
   socket.on("psychiatrist-offline", async (psychiatristId) => {
-    // Mark psychiatrist as offline
     const psychiatrist = await Psychiatrist.findOneAndUpdate(
       { _id: psychiatristId },
       { isOnline: false },
@@ -80,7 +82,6 @@ io.on("connection", (socket) => {
 
   // Handle user messages
   socket.on("user-message", (message) => {
-    // Broadcast message to all psychiatrists
     io.emit("user-message", { text: message.text });
   });
 
@@ -90,9 +91,14 @@ io.on("connection", (socket) => {
   });
 });
 
-app.get("/",(req,res)=>{
-  res.status(200).json({Alert:"Hey, this is the homepage!"})
-})
+// Nodemailer setup for sending emails
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: "your-email@gmail.com", // Replace with your email
+    pass: "your-email-password", // Replace with your email password
+  },
+});
 
 // Routes
 
@@ -102,6 +108,8 @@ app.post(
   upload.single("attachment"),
   [
     body("email").isEmail(),
+    body("name").notEmpty(),
+    body("password").notEmpty(),
     body("description").optional(),
   ],
   async (req, res) => {
@@ -110,9 +118,7 @@ app.post(
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { email, description } = req.body;
-
-    // Multer middleware has stored the file in req.file
+    const { email, name, password, description } = req.body;
     const attachment = req.file;
 
     if (!attachment) {
@@ -120,21 +126,38 @@ app.post(
     }
 
     try {
-      // Process the attachment as needed (save to cloud storage, etc.)
-      // For demonstration, we're just logging its details
-      console.log("Attachment received:", attachment.originalname, attachment.size);
-
-      // Example: Save psychiatrist details to MongoDB
+      const hashedPassword = await bcrypt.hash(password, 10);
       const newPsychiatrist = new Psychiatrist({
-        name: "Psychiatrist Name", // Replace with actual name handling logic
+        name,
         email,
-        password: "placeholder", // Password handling should not be handled directly like this
+        password: hashedPassword,
       });
       await newPsychiatrist.save();
 
+      // Send email with attachment
+      const mailOptions = {
+        from: email, // Replace with your email
+        to: "veloxify@gmail.com",
+        subject: "Proof of Certification",
+        text: "Please find the attached proof of certification.",
+        attachments: [
+          {
+            filename: attachment.originalname,
+            content: attachment.buffer,
+          },
+        ],
+      };
+
+      transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+          return console.error("Error sending email:", error);
+        }
+        console.log("Email sent:", info.response);
+      });
+
       res.status(201).json({ message: "Psychiatrist registered successfully." });
     } catch (error) {
-      console.error('Error registering psychiatrist:', error);
+      console.error("Error registering psychiatrist:", error);
       res.status(500).json({ message: "Registration failed. Please try again later." });
     }
   }
@@ -165,6 +188,11 @@ app.post("/login", async (req, res) => {
 app.get("/psychiatrists/online", async (req, res) => {
   const onlinePsychiatrists = await Psychiatrist.find({ isOnline: true });
   res.json({ psychiatrists: onlinePsychiatrists });
+});
+
+// Default route for homepage
+app.get("/", (req, res) => {
+  res.status(200).json({ Alert: "Hey, this is the homepage!" });
 });
 
 // Start server
