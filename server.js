@@ -173,7 +173,7 @@ app.post(
 );
 
 // Psychiatrist login route
-app.post("/login", async (req, res) => {
+app.post("/login", authenticateToken, async (req, res) => {
   const { email, password } = req.body;
 
   try {
