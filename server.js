@@ -17,7 +17,7 @@ const io = socketIo(server);
 const PORT = process.env.PORT || 5000;
 
 // MongoDB setup
-mongoose.connect(process.env.MONGODB_URI, {
+mongoose.connect(process.env.clusterConnection, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 });
@@ -44,7 +44,7 @@ const upload = multer({ storage: storage });
 
 // Middleware
 app.use(express.json());
-app.use(cors());
+app.use(cors({origin:"*"}));
 
 // JWT Middleware
 const authenticateToken = (req, res, next) => {
