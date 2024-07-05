@@ -90,6 +90,10 @@ io.on("connection", (socket) => {
   });
 });
 
+app.get("/",(req,res)=>{
+  res.status(200).json({Alert:"Hey, this is the homepage!"})
+})
+
 // Routes
 
 // Register a new Psychiatrist with proof of certification
