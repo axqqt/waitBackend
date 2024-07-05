@@ -17,7 +17,7 @@ const PORT = process.env.PORT || 5000;
 
 // MongoDB setup
 mongoose.connect(
-  "mongodb+srv://deranged248:derangedfrfrlmao@deranged.bvcwyla.mongodb.net/wait?retryWrites=true&w=majority&appName=Deranged",
+  process.env.clusterConnection,
   {
     useNewUrlParser: true,
     useUnifiedTopology: true,
@@ -95,8 +95,8 @@ io.on("connection", (socket) => {
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
-    user: "your-email@gmail.com", // Replace with your email
-    pass: "your-email-password", // Replace with your email password
+    user: process.env.nodeMailEmail, // Replace with your email
+    pass: process.env.nodeMailPassword, // Replace with your email password
   },
 });
 
